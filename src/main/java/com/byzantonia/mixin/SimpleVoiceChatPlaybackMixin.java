@@ -2,12 +2,14 @@ package com.byzantonia.mixin;
 
 import org.slf4j.Logger;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Redirect;
 
 import java.nio.file.FileSystem;
 import java.nio.file.Files;
 
+@Pseudo
 @Mixin(targets = "com.moulberry.flashback.compat.simple_voice_chat.SimpleVoiceChatPlayback")
 public abstract class SimpleVoiceChatPlaybackMixin {
 
