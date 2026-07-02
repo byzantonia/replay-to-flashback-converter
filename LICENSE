@@ -1,0 +1,16 @@
+Flashback Converter
+Copyright (C) 2026 Byzantonia
+
+This distribution is licensed under the GNU General Public License,
+version 3 only (GPL-3.0-only).
+
+You may redistribute and/or modify it under the terms of version 3 of the
+GNU General Public License as published by the Free Software Foundation.
+
+The complete license text is included in release JARs inside
+META-INF/jars/viaversion-common-5.9.1.jar as LICENSE and is available at:
+https://www.gnu.org/licenses/gpl-3.0.txt
+
+Code authored specifically for this project is additionally dedicated under
+CC0-1.0. See LICENSE-CC0. Third-party components remain under their respective
+licenses; see THIRD_PARTY_NOTICES.md.

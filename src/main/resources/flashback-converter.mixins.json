@@ -1,0 +1,17 @@
+{
+	"required": true,
+	"package": "com.byzantonia.mixin",
+	"refmap": "flashback-converter-refmap.json",
+	"compatibilityLevel": "JAVA_21",
+	"mixins": [],
+	"client": [
+		"SelectReplayScreenMixin",
+		"SimpleVoiceChatPlaybackMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	},
+	"overwrites": {
+		"requireAnnotations": true
+	}
+}

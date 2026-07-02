@@ -1,0 +1,35 @@
+{
+	"schemaVersion": 1,
+	"id": "flashback-converter",
+	"version": "${version}",
+	"name": "Flashback Converter",
+	"description": "Adds a Convert from replay mcpr button to Flashback's Select Replay screen.",
+	"authors": [
+		"Byzantonia"
+	],
+	"contact": {
+		"homepage": "https://modrinth.com/mod/replay-to-flashback-converter",
+		"sources": "https://github.com/Byzantonia/replay-to-flashback-converter",
+		"issues": "https://github.com/Byzantonia/replay-to-flashback-converter/issues"
+	},
+	"license": "GPL-3.0-only",
+	"icon": "assets/flashback-converter/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.byzantonia.FlashbackConverter"
+		],
+		"client": [
+			"com.byzantonia.FlashbackConverterClient"
+		]
+	},
+	"mixins": [
+		"flashback-converter.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.18.4",
+		"minecraft": "~1.21.1",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}
