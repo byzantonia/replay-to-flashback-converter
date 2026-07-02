@@ -1,13 +1,26 @@
 # Flashback Converter (Fabric 1.21.1)
 
-Convert ReplayMod `.mcpr` recordings into Flashback `.zip` archives from inside Minecraft.
+Convert 1.20.1 ReplayMod `.mcpr` recordings into 1.21.1 Flashback `.zip` archives from inside Minecraft.
 
-Source repository: https://github.com/Byzantonia/replay-to-flashback-converter
+## Notes
+
+This is only currently supporting the conversion of 1.20.1 replays into 1.21.1 flashbacks. Other conversions are not currently supported and may fail or crash.
+
+There will likely be bugs and issues, if you encounter any, please make a bug report.
+
+### Bobby Data
+
+To import your Bobby mod data:
+
+1. Open the root folder of the Minecraft instance where you recorded the original replay.
+2. Locate the `.bobby` folder.
+3. Copy the `.bobby` folder into the root folder of your Minecraft 1.21.1 instance.
+4. Open the converted Flashback replay and run `/bobby upgrade` in chat.
 
 ## Requirements
 
 - Minecraft `1.21.1`
-- Fabric Loader `0.19.3+`
+- Fabric Loader `0.18.4+`
 - Fabric API `0.116.13+1.21.1`
 - Java `21`
 
@@ -18,7 +31,7 @@ Source repository: https://github.com/Byzantonia/replay-to-flashback-converter
 3. Pick a `.mcpr` file from the Windows file chooser.
 4. Confirm conversion.
 
-The mod writes `<input-name>-flashback.zip` next to the selected input file.
+The mod writes `<input-name>-flashback.zip` into the flashback folder of your instance.
 
 ## Build
 
