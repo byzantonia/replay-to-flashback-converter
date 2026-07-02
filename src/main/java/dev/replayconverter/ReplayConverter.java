@@ -30,10 +30,12 @@ import java.util.Set;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Consumer;
 
 public final class ReplayConverter {
     private static final int SIMPLE_VOICE_WARMUP_TICKS = 40;
     private static final int FLASHBACK_CHUNK_CACHE_SIZE = 10000;
+    private static final int REPLAY_CAMERA_ENTITY_ID = 2_000_000_000;
     private static final UUID REPLAY_CAMERA_PROFILE_UUID = new UUID(0L, 1L);
     private static final Set<Integer> FLASHBACK_IGNORED_GAME_PACKET_IDS = Set.of(
             // Network framing consumed by Minecraft's packet-bundling pipeline.
@@ -100,9 +102,13 @@ public final class ReplayConverter {
             FlashbackActionWriter.MOVE_ENTITIES);
 
     public ConversionResult convert(Path input, Path output) throws Exception {
+        return convert(input, output, status -> {});
+    }
+
+    public ConversionResult convert(Path input, Path output, Consumer<String> progress) throws Exception {
+        progress.accept("Preparing conversion...");
         List<byte[]> snapshotConfiguration = new ArrayList<>();
         List<byte[]> snapshotGame = new ArrayList<>();
-        List<TimedPacket> timeline = new ArrayList<>();
         FlashbackActionWriter writer = new FlashbackActionWriter(ACTIONS);
         ChunkCacheBuilder chunkCache = new ChunkCacheBuilder();
         MovementConverter movement = new MovementConverter();
@@ -110,6 +116,7 @@ public final class ReplayConverter {
         SkinProfileExtractor skinProfiles = new SkinProfileExtractor();
         LocalPlayerTracker localPlayer = new LocalPlayerTracker();
         int sourcePackets = 0, outputPackets = 0, lastTick = 0, lastTimestamp = 0;
+        int snapshotSourcePackets = 0;
         PlayerSpawn playerSpawn = null;
         boolean snapshotComplete = false;
         boolean loginSeenInSnapshot = false;
@@ -118,8 +125,11 @@ public final class ReplayConverter {
         String worldName;
         byte[] replayIconPng = null;
 
-           try (McprReader reader = new McprReader(input);
-               ProtocolTranslator translator = new ProtocolTranslator(viaVersionDirectory(output), 763, 767)) {
+        progress.accept("Opening ReplayMod archive...");
+        try (McprReader reader = new McprReader(input)) {
+            progress.accept("Initializing protocol translator...");
+            try (ProtocolTranslator translator = new ProtocolTranslator(viaVersionDirectory(output), 763, 767)) {
+            progress.accept("Reading replay metadata and thumbnail...");
             JsonObject replayMetadata = JsonParser.parseString(reader.metadataJson()).getAsJsonObject();
             // Replay Mod playback has no live ServerData, so Bobby stores and reads
             // replay-populated chunks under its "unknown" world namespace.
@@ -127,8 +137,10 @@ public final class ReplayConverter {
             worldName = optionalString(replayMetadata, "customServerName");
             if (worldName == null) worldName = optionalString(replayMetadata, "serverName");
             replayIconPng = toPng(reader.thumbnailBytes());
+            progress.accept("Translating initial replay snapshot...");
             for (McprPacket packet : reader) {
                 sourcePackets++;
+                if (sourcePackets % 1000 == 0) progress.accept("Translating snapshot packets: " + String.format("%,d", sourcePackets));
                 lastTimestamp = packet.timestampMillis();
                 int tick = TickScheduler.tickAt(lastTimestamp);
                 byte[] primary = translator.translateClientbound(packet.payload());
@@ -179,17 +191,19 @@ public final class ReplayConverter {
                     }
                     boolean timedOutWaitingForSpawn = loginSeenTick >= 0 && tick - loginSeenTick >= 200;
                     snapshotComplete = loginSeenInSnapshot && (playerSpawn != null || timedOutWaitingForSpawn);
-                } else {
-                    if (primary != null) timeline.add(new TimedPacket(tick, State.PLAY, primary));
-                    for (TranslatedPacket translated : generated) {
-                        timeline.add(new TimedPacket(tick, translated.state(), translated.payload()));
-                    }
+                    if (snapshotComplete) progress.accept("Initial snapshot found; reading timeline...");
                 }
                 if (primary != null) outputPackets++;
                 outputPackets += generated.size();
+                if (snapshotComplete) {
+                    snapshotSourcePackets = sourcePackets;
+                    break;
+                }
+            }
             }
         }
 
+        progress.accept("Organizing configuration packets...");
         for (byte[] packet : snapshotConfiguration) writer.snapshotAction(FlashbackActionWriter.CONFIGURATION_PACKET, packet);
         int loginIndex = -1;
         for (int i = 0; i < snapshotGame.size(); i++) {
@@ -203,38 +217,73 @@ public final class ReplayConverter {
         // ReplayMod may prepend play-state housekeeping packets to its synthetic
         // snapshot. They were captured before registries/login existed, so translating
         // or replaying them is invalid; native Flashback snapshots begin at Login.
+        progress.accept("Selecting the replay camera profile...");
         SkinProfile selectedProfile = skinProfiles.select(localPlayer.localPlayerUuid);
+        progress.accept("Checking for the player skin...");
         selectedProfile = resolveSkinProfile(selectedProfile);
-        writeGamePacket(writer, chunkCache, movement, voiceChat, snapshotGame.get(loginIndex), true, 0);
+        progress.accept("Building the initial Flashback snapshot...");
+        writeGamePacket(writer, chunkCache, movement, voiceChat,
+                withReplayCameraLoginId(snapshotGame.get(loginIndex)), true, 0);
         writer.snapshotAction(FlashbackActionWriter.CREATE_LOCAL_PLAYER,
             createLocalPlayerPayload(input, localPlayer.localPlayerUuid, playerSpawn, selectedProfile));
         if (localPlayer.localPlayerEntityId != null) {
             writer.snapshotAction(FlashbackActionWriter.GAME_PACKET,
-                createPlayerModelPartsPacket(localPlayer.localPlayerEntityId));
+                createPlayerModelPartsPacket(REPLAY_CAMERA_ENTITY_ID));
         }
         for (int i = loginIndex + 1; i < snapshotGame.size(); i++) {
             writeGamePacket(writer, chunkCache, movement, voiceChat, snapshotGame.get(i), true, 0);
         }
-        for (TimedPacket timed : timeline) {
-            while (lastTick < timed.tick) {
-                writer.action(FlashbackActionWriter.NEXT_TICK, new byte[0]);
-                lastTick++;
-            }
-            if (timed.state == State.CONFIGURATION) {
-                if (!isFlashbackUnsupportedConfigurationPacket(timed.payload)) {
-                    writer.action(FlashbackActionWriter.CONFIGURATION_PACKET, timed.payload);
+        progress.accept("Reopening replay for bounded-memory conversion...");
+        sourcePackets = 0;
+        outputPackets = 0;
+        try (McprReader reader = new McprReader(input);
+             ProtocolTranslator translator = new ProtocolTranslator(viaVersionDirectory(output), 763, 767)) {
+            for (McprPacket packet : reader) {
+                sourcePackets++;
+                lastTimestamp = packet.timestampMillis();
+                int tick = TickScheduler.tickAt(lastTimestamp);
+                byte[] primary = translator.translateClientbound(packet.payload());
+                translator.finishSyntheticConfigurationIfNeeded();
+                List<TranslatedPacket> generated = translator.drainInjectedPackets();
+                if (primary != null) outputPackets++;
+                outputPackets += generated.size();
+
+                if (sourcePackets <= snapshotSourcePackets) continue;
+                if (sourcePackets % 1000 == 0) {
+                    progress.accept("Converting timeline source packet: " + String.format("%,d", sourcePackets));
                 }
-            } else {
-                writeGamePacket(writer, chunkCache, movement, voiceChat, timed.payload, false, timed.tick);
+                while (lastTick < tick) {
+                    writer.action(FlashbackActionWriter.NEXT_TICK, new byte[0]);
+                    lastTick++;
+                }
+                if (primary != null) writeGamePacket(writer, chunkCache, movement, voiceChat,
+                        withReplayCameraLoginId(primary), false, tick);
+                for (TranslatedPacket translated : generated) {
+                    if (translated.state() == State.CONFIGURATION) {
+                        if (!isFlashbackUnsupportedConfigurationPacket(translated.payload())) {
+                            writer.action(FlashbackActionWriter.CONFIGURATION_PACKET, translated.payload());
+                        }
+                    } else {
+                        writeGamePacket(writer, chunkCache, movement, voiceChat,
+                                withReplayCameraLoginId(translated.payload()), false, tick);
+                    }
+                }
             }
         }
+        progress.accept("Finalizing replay ticks...");
         int totalTicks = Math.max(1, (lastTimestamp + 49) / 50);
         while (lastTick < totalTicks) {
             writer.action(FlashbackActionWriter.NEXT_TICK, new byte[0]);
             lastTick++;
         }
-        FlashbackArchiveWriter.write(output, baseName(input), totalTicks, writer.finish(), chunkCache.files(),
-                bobbyWorldName, worldName, replayIconPng);
+        progress.accept("Encoding Flashback action data...");
+        try {
+            FlashbackArchiveWriter.write(output, baseName(input), totalTicks, writer, chunkCache.files(),
+                    bobbyWorldName, worldName, replayIconPng, progress);
+        } finally {
+            writer.close();
+        }
+        progress.accept("Conversion complete.");
         return new ConversionResult(sourcePackets, outputPackets, totalTicks, snapshotConfiguration.size(), snapshotGame.size());
     }
 
@@ -295,6 +344,7 @@ public final class ReplayConverter {
     private static void writeGamePacket(FlashbackActionWriter writer, ChunkCacheBuilder chunks, MovementConverter movement,
                                         VoiceChatConverter voiceChat,
                                         byte[] packet, boolean snapshot, int tick) throws IOException {
+        packet = withReplayCameraLoginId(packet);
         MovementResult movementResult = movement.accept(packet);
         if (movementResult.handled) {
             if (movementResult.payload == null) return;
@@ -646,9 +696,7 @@ public final class ReplayConverter {
         if (spawn == null) spawn = new PlayerSpawn(0, 64, 0, 0, 0);
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         DataOutputStream data = new DataOutputStream(bytes);
-        UUID entityUuid = localPlayerUuid != null
-                ? localPlayerUuid
-                : UUID.nameUUIDFromBytes(input.toAbsolutePath().toString().getBytes(StandardCharsets.UTF_8));
+        UUID entityUuid = REPLAY_CAMERA_PROFILE_UUID;
         data.writeLong(entityUuid.getMostSignificantBits());
         data.writeLong(entityUuid.getLeastSignificantBits());
         data.writeDouble(spawn.x); data.writeDouble(spawn.y); data.writeDouble(spawn.z);
@@ -703,6 +751,15 @@ public final class ReplayConverter {
         bytes.write(0x7F);
         bytes.write(0xFF); // terminator
         return bytes.toByteArray();
+    }
+
+    private static byte[] withReplayCameraLoginId(byte[] packet) {
+        if (packetId(packet) != ClientboundPackets1_20_5.LOGIN.getId()) return packet;
+        int offset = varIntSize(packet);
+        if (offset < 0 || packet.length < offset + Integer.BYTES) return packet;
+        byte[] rewritten = packet.clone();
+        ByteBuffer.wrap(rewritten, offset, Integer.BYTES).putInt(REPLAY_CAMERA_ENTITY_ID);
+        return rewritten;
     }
 
     private static final class LocalPlayerTracker {

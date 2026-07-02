@@ -29,12 +29,13 @@ public class FlashbackConverter implements ModInitializer {
 		LOGGER.info("Flashback Converter initialized");
 	}
 
-	public static void convertAsync(Path input, Path output, Runnable onSuccess, Consumer<Exception> onFailure) {
+	public static void convertAsync(Path input, Path output, Consumer<String> onProgress,
+			Runnable onSuccess, Consumer<Throwable> onFailure) {
 		Thread worker = new Thread(() -> {
 			try {
-				new ReplayConverter().convert(input, output);
+				new ReplayConverter().convert(input, output, onProgress);
 				onSuccess.run();
-			} catch (Exception error) {
+			} catch (Throwable error) {
 				LOGGER.error("Conversion failed", error);
 				onFailure.accept(error);
 			}

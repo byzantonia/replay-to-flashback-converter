@@ -115,10 +115,12 @@ public abstract class SelectReplayScreenMixin extends Screen {
 
     private void flashbackConverter$startConversion(Screen returnScreen, Path input, Path output) {
         Minecraft minecraft = Minecraft.getInstance();
-        minecraft.setScreen(new ConversionProgressScreen(input.getFileName().toString()));
+        ConversionProgressScreen progressScreen = new ConversionProgressScreen(input.getFileName().toString());
+        minecraft.setScreen(progressScreen);
         FlashbackConverter.convertAsync(
             input,
             output,
+            progressScreen::setStatus,
             () -> minecraft.execute(() -> minecraft.setScreen(new ConversionCompleteScreen(returnScreen, output))),
             error -> minecraft.execute(() -> minecraft.setScreen(new ConversionErrorScreen(
                 returnScreen,

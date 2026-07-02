@@ -8,6 +8,7 @@ import net.minecraft.network.chat.Component;
 public class ConversionProgressScreen extends Screen {
 
     private final String replayName;
+    private volatile String status = "Preparing conversion...";
 
     public ConversionProgressScreen(String replayName) {
         super(Component.literal("Converting replay"));
@@ -18,13 +19,17 @@ public class ConversionProgressScreen extends Screen {
     protected void init() {
     }
 
+    public void setStatus(String status) {
+        this.status = status;
+    }
+
     @Override
     public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
         super.render(guiGraphics, mouseX, mouseY, partialTick);
 
         guiGraphics.drawCenteredString(this.font, this.title, this.width / 2, this.height / 2 - 34, 0xFFFFFFFF);
         guiGraphics.drawCenteredString(this.font, this.replayName, this.width / 2, this.height / 2 - 18, 0xFFB8B8B8);
-        guiGraphics.drawCenteredString(this.font, "Translating packets and building Flashback archive...", this.width / 2, this.height / 2 - 2, 0xFFB8B8B8);
+        guiGraphics.drawCenteredString(this.font, this.status, this.width / 2, this.height / 2 - 2, 0xFFB8B8B8);
 
         int barWidth = 240;
         int barHeight = 12;
