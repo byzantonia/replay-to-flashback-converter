@@ -33,6 +33,10 @@ import java.util.Optional;
 import java.util.function.Consumer;
 
 public final class ReplayConverter {
+    // Minecraft 1.20/1.20.1 clientbound play packet id. Some ReplayMod
+    // snapshots contain truncated chunk section arrays; those chunks are not
+    // usable, but should not prevent the rest of the replay being converted.
+    private static final int SOURCE_LEVEL_CHUNK_WITH_LIGHT_PACKET_ID = 0x24;
     private static final int SIMPLE_VOICE_WARMUP_TICKS = 40;
     private static final int FLASHBACK_CHUNK_CACHE_SIZE = 10000;
     private static final int REPLAY_CAMERA_ENTITY_ID = 2_000_000_000;
@@ -143,7 +147,8 @@ public final class ReplayConverter {
                 if (sourcePackets % 1000 == 0) progress.accept("Translating snapshot packets: " + String.format("%,d", sourcePackets));
                 lastTimestamp = packet.timestampMillis();
                 int tick = TickScheduler.tickAt(lastTimestamp);
-                byte[] primary = translator.translateClientbound(packet.payload());
+                byte[] primary = translateClientboundOrSkipMalformedChunk(
+                        translator, packet, sourcePackets, progress);
                 translator.finishSyntheticConfigurationIfNeeded();
                 List<TranslatedPacket> generated = translator.drainInjectedPackets();
 
@@ -242,7 +247,8 @@ public final class ReplayConverter {
                 sourcePackets++;
                 lastTimestamp = packet.timestampMillis();
                 int tick = TickScheduler.tickAt(lastTimestamp);
-                byte[] primary = translator.translateClientbound(packet.payload());
+                byte[] primary = translateClientboundOrSkipMalformedChunk(
+                        translator, packet, sourcePackets, progress);
                 translator.finishSyntheticConfigurationIfNeeded();
                 List<TranslatedPacket> generated = translator.drainInjectedPackets();
                 if (primary != null) outputPackets++;
@@ -285,6 +291,24 @@ public final class ReplayConverter {
         }
         progress.accept("Conversion complete.");
         return new ConversionResult(sourcePackets, outputPackets, totalTicks, snapshotConfiguration.size(), snapshotGame.size());
+    }
+
+    private static byte[] translateClientboundOrSkipMalformedChunk(
+            ProtocolTranslator translator, McprPacket packet, int sourcePacketIndex,
+            Consumer<String> progress) {
+        try {
+            return translator.translateClientbound(packet.payload());
+        } catch (RuntimeException failure) {
+            if (packetId(packet.payload()) != SOURCE_LEVEL_CHUNK_WITH_LIGHT_PACKET_ID) {
+                throw failure;
+            }
+
+            String warning = "Skipping malformed chunk packet " + String.format("%,d", sourcePacketIndex)
+                    + " at " + packet.timestampMillis() + " ms";
+            System.err.println(warning + ": " + failure);
+            progress.accept(warning);
+            return null;
+        }
     }
 
     private static byte[] toPng(byte[] sourceImage) {
