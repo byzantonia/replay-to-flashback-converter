@@ -12,6 +12,12 @@ public final class CoreSelfTest {
                 FlashbackActionWriter.NEXT_TICK, FlashbackActionWriter.GAME_PACKET));
         writer.snapshotAction(FlashbackActionWriter.GAME_PACKET, new byte[]{1, 2});
         writer.action(FlashbackActionWriter.NEXT_TICK, new byte[0]);
+        for (int i = 0; i < 5 * 60 * 20; i++) {
+            writer.action(FlashbackActionWriter.NEXT_TICK, new byte[0]);
+        }
+        writer.prepareChunks();
+        if (writer.chunkCount() != 1) throw new AssertionError("Replay must remain in one seek-safe chunk");
+        if (writer.chunkDuration(0) != 5 * 60 * 20 + 1) throw new AssertionError("Chunk duration mismatch");
         byte[] result = writer.finish();
         if (ByteBuffer.wrap(result).getInt() != FlashbackActionWriter.MAGIC) throw new AssertionError("Magic mismatch");
         System.out.println("Core self-test passed (" + result.length + " bytes)");

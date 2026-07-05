@@ -23,8 +23,6 @@ public final class FlashbackActionWriter implements AutoCloseable {
     public static final String LEVEL_CHUNK_CACHED = "flashback:action/level_chunk_cached";
     public static final String MOVE_ENTITIES = "flashback:action/move_entities";
     public static final String SIMPLE_VOICE_CHAT_SOUND_OPTIONAL = "flashback:action/simple_voice_chat_sound_optional";
-    private static final int TICKS_PER_CHUNK = 5 * 60 * 20;
-
     private final List<String> actionTable;
     private final Map<String, Integer> actionIds = new LinkedHashMap<>();
     private final ByteArrayOutputStream snapshotBytes = new ByteArrayOutputStream();
@@ -32,7 +30,6 @@ public final class FlashbackActionWriter implements AutoCloseable {
     private Path timelineFile;
     private OutputStream timelineBytes;
     private int ticksInChunk;
-    private boolean rotateBeforeNextAction;
     private boolean prepared;
 
     public FlashbackActionWriter(List<String> actionTable) {
@@ -53,11 +50,12 @@ public final class FlashbackActionWriter implements AutoCloseable {
 
     public void action(String name, byte[] payload) throws IOException {
         if (prepared) throw new IllegalStateException("Replay actions have already been finalized");
-        if (rotateBeforeNextAction) rotateTimelineFile();
+        // A Flashback seek starts from the snapshot embedded in the selected chunk.
+        // We cannot safely split until the converter can build a complete world/entity
+        // snapshot for every boundary, so keep one disk-backed chunk for correctness.
         writeAction(timelineBytes, name, payload);
         if (NEXT_TICK.equals(name)) {
             ticksInChunk++;
-            rotateBeforeNextAction = ticksInChunk >= TICKS_PER_CHUNK;
         }
     }
 
@@ -122,14 +120,6 @@ public final class FlashbackActionWriter implements AutoCloseable {
         }
         if (!prepared) Files.deleteIfExists(timelineFile);
         if (failure != null) throw failure;
-    }
-
-    private void rotateTimelineFile() throws IOException {
-        timelineBytes.close();
-        completedChunks.add(new TimelineChunk(timelineFile, ticksInChunk));
-        ticksInChunk = 0;
-        rotateBeforeNextAction = false;
-        openTimelineFile();
     }
 
     private void openTimelineFile() throws IOException {

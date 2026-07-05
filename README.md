@@ -43,7 +43,7 @@ gradlew build
 
 Release jar output:
 
-- `build/libs/flashback-converter-1.0.1.jar`
+- `build/libs/flashback-converter-1.0.3.jar`
 
 ## Notes
 
