@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -28,7 +29,7 @@ public final class FlashbackActionWriter implements AutoCloseable {
     private final List<String> actionTable;
     private final Map<String, Integer> actionIds = new LinkedHashMap<>();
     private final ByteArrayOutputStream snapshotBytes = new ByteArrayOutputStream();
-    private final ByteArrayOutputStream replayStateBytes = new ByteArrayOutputStream();
+    private final SnapshotState replayState = new SnapshotState();
     private final List<TimelineChunk> completedChunks = new ArrayList<>();
     private Path timelineFile;
     private OutputStream timelineBytes;
@@ -61,10 +62,8 @@ public final class FlashbackActionWriter implements AutoCloseable {
         if (NEXT_TICK.equals(name)) {
             ticksInChunk++;
             rotateBeforeNextAction = ticksInChunk >= TICKS_PER_CHUNK;
-        } else {
-            // Reconstruct chunk-start snapshots by replaying all stateful actions
-            // up to that point (ticks are excluded because snapshots cannot advance time).
-            writeAction(replayStateBytes, name, payload);
+        } else if (!SIMPLE_VOICE_CHAT_SOUND_OPTIONAL.equals(name)) {
+            replayState.accept(name, payload);
         }
     }
 
@@ -141,10 +140,10 @@ public final class FlashbackActionWriter implements AutoCloseable {
 
     private byte[] buildCombinedSnapshot() {
         byte[] initial = snapshotBytes.toByteArray();
-        byte[] replayState = replayStateBytes.toByteArray();
-        byte[] combined = new byte[initial.length + replayState.length];
+        byte[] replayStateBytes = replayState.toByteArray();
+        byte[] combined = new byte[initial.length + replayStateBytes.length];
         System.arraycopy(initial, 0, combined, 0, initial.length);
-        System.arraycopy(replayState, 0, combined, initial.length, replayState.length);
+        System.arraycopy(replayStateBytes, 0, combined, initial.length, replayStateBytes.length);
         return combined;
     }
 
@@ -170,4 +169,97 @@ public final class FlashbackActionWriter implements AutoCloseable {
     }
 
     private record TimelineChunk(Path path, int ticks, byte[] snapshot) {}
+
+    private final class SnapshotState {
+        private final ByteArrayOutputStream actions = new ByteArrayOutputStream();
+        private final Map<String, Map<Integer, byte[]>> entityMovements = new LinkedHashMap<>();
+
+        void accept(String name, byte[] payload) throws IOException {
+            if (MOVE_ENTITIES.equals(name) && rememberMoveEntities(payload)) {
+                return;
+            }
+            writeAction(actions, name, payload);
+        }
+
+        byte[] toByteArray() {
+            try {
+                ByteArrayOutputStream result = new ByteArrayOutputStream(actions.size() + entityMovements.size() * 64);
+                actions.writeTo(result);
+                for (Map.Entry<String, Map<Integer, byte[]>> dimension : entityMovements.entrySet()) {
+                    ByteArrayOutputStream payload = new ByteArrayOutputStream(64 + dimension.getValue().size() * 40);
+                    writeVarInt(payload, 1);
+                    writeString(payload, dimension.getKey());
+                    writeVarInt(payload, dimension.getValue().size());
+                    for (Map.Entry<Integer, byte[]> entity : dimension.getValue().entrySet()) {
+                        writeVarInt(payload, entity.getKey());
+                        payload.write(entity.getValue());
+                    }
+                    writeAction(result, MOVE_ENTITIES, payload.toByteArray());
+                }
+                return result.toByteArray();
+            } catch (IOException error) {
+                throw new UncheckedIOException(error);
+            }
+        }
+
+        private boolean rememberMoveEntities(byte[] payload) {
+            try {
+                PacketCursor in = new PacketCursor(payload);
+                int dimensions = in.varInt();
+                for (int d = 0; d < dimensions; d++) {
+                    String dimension = in.stringValue();
+                    Map<Integer, byte[]> entities = entityMovements.computeIfAbsent(dimension, ignored -> new LinkedHashMap<>());
+                    int entityCount = in.varInt();
+                    for (int e = 0; e < entityCount; e++) {
+                        int entityId = in.varInt();
+                        int start = in.position();
+                        in.skip(Double.BYTES * 3 + Float.BYTES * 3 + 1);
+                        entities.put(entityId, Arrays.copyOfRange(payload, start, in.position()));
+                    }
+                }
+                return in.position() == payload.length;
+            } catch (RuntimeException ignored) {
+                return false;
+            }
+        }
+    }
+
+    private static final class PacketCursor {
+        private final byte[] bytes;
+        private int position;
+
+        PacketCursor(byte[] bytes) {
+            this.bytes = bytes;
+        }
+
+        int position() {
+            return position;
+        }
+
+        void skip(int count) {
+            if (count < 0 || position + count > bytes.length) throw new IllegalArgumentException("Packet underflow");
+            position += count;
+        }
+
+        int varInt() {
+            int value = 0;
+            int shift = 0;
+            while (shift < 35) {
+                if (position >= bytes.length) throw new IllegalArgumentException("Packet underflow");
+                int b = bytes[position++] & 0xff;
+                value |= (b & 0x7f) << shift;
+                if ((b & 0x80) == 0) return value;
+                shift += 7;
+            }
+            throw new IllegalArgumentException("VarInt too large");
+        }
+
+        String stringValue() {
+            int length = varInt();
+            if (length < 0 || position + length > bytes.length) throw new IllegalArgumentException("Packet underflow");
+            String value = new String(bytes, position, length, StandardCharsets.UTF_8);
+            position += length;
+            return value;
+        }
+    }
 }
