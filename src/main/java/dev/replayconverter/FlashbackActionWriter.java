@@ -28,9 +28,11 @@ public final class FlashbackActionWriter implements AutoCloseable {
     private final List<String> actionTable;
     private final Map<String, Integer> actionIds = new LinkedHashMap<>();
     private final ByteArrayOutputStream snapshotBytes = new ByteArrayOutputStream();
+    private final ByteArrayOutputStream replayStateBytes = new ByteArrayOutputStream();
     private final List<TimelineChunk> completedChunks = new ArrayList<>();
     private Path timelineFile;
     private OutputStream timelineBytes;
+    private byte[] currentChunkSnapshot;
     private int ticksInChunk;
     private boolean rotateBeforeNextAction;
     private boolean prepared;
@@ -54,10 +56,15 @@ public final class FlashbackActionWriter implements AutoCloseable {
     public void action(String name, byte[] payload) throws IOException {
         if (prepared) throw new IllegalStateException("Replay actions have already been finalized");
         if (rotateBeforeNextAction) rotateTimelineFile();
+        if (currentChunkSnapshot == null) currentChunkSnapshot = buildCombinedSnapshot();
         writeAction(timelineBytes, name, payload);
         if (NEXT_TICK.equals(name)) {
             ticksInChunk++;
             rotateBeforeNextAction = ticksInChunk >= TICKS_PER_CHUNK;
+        } else {
+            // Reconstruct chunk-start snapshots by replaying all stateful actions
+            // up to that point (ticks are excluded because snapshots cannot advance time).
+            writeAction(replayStateBytes, name, payload);
         }
     }
 
@@ -80,7 +87,8 @@ public final class FlashbackActionWriter implements AutoCloseable {
     public void prepareChunks() throws IOException {
         if (prepared) return;
         timelineBytes.close();
-        completedChunks.add(new TimelineChunk(timelineFile, ticksInChunk));
+        byte[] snapshot = currentChunkSnapshot != null ? currentChunkSnapshot : buildCombinedSnapshot();
+        completedChunks.add(new TimelineChunk(timelineFile, ticksInChunk, snapshot));
         prepared = true;
     }
 
@@ -100,12 +108,9 @@ public final class FlashbackActionWriter implements AutoCloseable {
         data.writeInt(MAGIC);
         writeVarInt(output, actionTable.size());
         for (String action : actionTable) writeString(output, action);
-        if (index == 0) {
-            data.writeInt(snapshotBytes.size());
-            snapshotBytes.writeTo(output);
-        } else {
-            data.writeInt(0);
-        }
+        byte[] snapshot = completedChunks.get(index).snapshot();
+        data.writeInt(snapshot.length);
+        output.write(snapshot);
         Files.copy(completedChunks.get(index).path(), output);
     }
 
@@ -126,10 +131,21 @@ public final class FlashbackActionWriter implements AutoCloseable {
 
     private void rotateTimelineFile() throws IOException {
         timelineBytes.close();
-        completedChunks.add(new TimelineChunk(timelineFile, ticksInChunk));
+        byte[] snapshot = currentChunkSnapshot != null ? currentChunkSnapshot : buildCombinedSnapshot();
+        completedChunks.add(new TimelineChunk(timelineFile, ticksInChunk, snapshot));
         ticksInChunk = 0;
         rotateBeforeNextAction = false;
         openTimelineFile();
+        currentChunkSnapshot = buildCombinedSnapshot();
+    }
+
+    private byte[] buildCombinedSnapshot() {
+        byte[] initial = snapshotBytes.toByteArray();
+        byte[] replayState = replayStateBytes.toByteArray();
+        byte[] combined = new byte[initial.length + replayState.length];
+        System.arraycopy(initial, 0, combined, 0, initial.length);
+        System.arraycopy(replayState, 0, combined, initial.length, replayState.length);
+        return combined;
     }
 
     private void openTimelineFile() throws IOException {
@@ -153,5 +169,5 @@ public final class FlashbackActionWriter implements AutoCloseable {
         } while (value != 0);
     }
 
-    private record TimelineChunk(Path path, int ticks) {}
+    private record TimelineChunk(Path path, int ticks, byte[] snapshot) {}
 }
