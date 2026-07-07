@@ -58,8 +58,6 @@ public final class ReplayConverter {
             ClientboundPackets1_20_5.MOVE_ENTITY_POS.getId(),
             ClientboundPackets1_20_5.MOVE_ENTITY_ROT.getId(),
             ClientboundPackets1_20_5.MOVE_ENTITY_POS_ROT.getId(),
-            ClientboundPackets1_20_5.LEVEL_EVENT.getId(),
-            ClientboundPackets1_20_5.LEVEL_PARTICLES.getId(),
             ClientboundPackets1_20_5.PLAYER_POSITION.getId(),
             ClientboundPackets1_20_5.PLAYER_CHAT.getId(),
             ClientboundPackets1_20_5.DELETE_CHAT.getId(),
