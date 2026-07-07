@@ -28,6 +28,7 @@ import javax.imageio.ImageIO;
 import java.util.UUID;
 import java.util.Set;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
@@ -259,6 +260,7 @@ public final class ReplayConverter {
                     progress.accept("Converting timeline source packet: " + String.format("%,d", sourcePackets));
                 }
                 while (lastTick < tick) {
+                    writePendingMovement(writer, movement, false);
                     writer.action(FlashbackActionWriter.NEXT_TICK, new byte[0]);
                     lastTick++;
                 }
@@ -279,6 +281,7 @@ public final class ReplayConverter {
         progress.accept("Finalizing replay ticks...");
         int totalTicks = Math.max(1, (lastTimestamp + 49) / 50);
         while (lastTick < totalTicks) {
+            writePendingMovement(writer, movement, false);
             writer.action(FlashbackActionWriter.NEXT_TICK, new byte[0]);
             lastTick++;
         }
@@ -371,9 +374,7 @@ public final class ReplayConverter {
         packet = withReplayCameraLoginId(packet);
         MovementResult movementResult = movement.accept(packet);
         if (movementResult.handled) {
-            if (movementResult.payload == null) return;
-            if (snapshot) writer.snapshotAction(FlashbackActionWriter.MOVE_ENTITIES, movementResult.payload);
-            else writer.action(FlashbackActionWriter.MOVE_ENTITIES, movementResult.payload);
+            if (snapshot) writePendingMovement(writer, movement, true);
             return;
         }
         VoiceAction voiceAction = voiceChat.accept(packet);
@@ -404,6 +405,14 @@ public final class ReplayConverter {
             payload = packet;
         }
         if (snapshot) writer.snapshotAction(action, payload); else writer.action(action, payload);
+    }
+
+    private static void writePendingMovement(FlashbackActionWriter writer, MovementConverter movement,
+                                             boolean snapshot) throws IOException {
+        byte[] payload = movement.drainPayload();
+        if (payload == null) return;
+        if (snapshot) writer.snapshotAction(FlashbackActionWriter.MOVE_ENTITIES, payload);
+        else writer.action(FlashbackActionWriter.MOVE_ENTITIES, payload);
     }
 
     private static final class ChunkCacheBuilder {
@@ -439,6 +448,7 @@ public final class ReplayConverter {
 
     private static final class MovementConverter {
         private final Map<Integer, EntityPosition> entities = new HashMap<>();
+        private final Map<Integer, EntityPosition> pendingTickMovements = new LinkedHashMap<>();
 
         MovementResult accept(byte[] packet) throws IOException {
             PacketCursor in = new PacketCursor(packet);
@@ -490,19 +500,29 @@ public final class ReplayConverter {
             }
             EntityPosition updated = new EntityPosition(x, y, z, yaw, pitch, head, onGround);
             entities.put(id, updated);
-            return new MovementResult(true, encodeMovement(id, updated));
+            pendingTickMovements.put(id, updated);
+            return MovementResult.HANDLED_WITHOUT_OUTPUT;
         }
 
-        private static byte[] encodeMovement(int id, EntityPosition position) throws IOException {
-            ByteArrayOutputStream bytes = new ByteArrayOutputStream(64);
+        byte[] drainPayload() throws IOException {
+            if (pendingTickMovements.isEmpty()) return null;
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream(64 * pendingTickMovements.size());
             DataOutputStream data = new DataOutputStream(bytes);
             FlashbackActionWriter.writeVarInt(bytes, 1); // one dimension
             FlashbackActionWriter.writeString(bytes, "minecraft:overworld");
-            FlashbackActionWriter.writeVarInt(bytes, 1); // one entity
-            FlashbackActionWriter.writeVarInt(bytes, id);
-            data.writeDouble(position.x); data.writeDouble(position.y); data.writeDouble(position.z);
-            data.writeFloat(position.yaw); data.writeFloat(position.pitch); data.writeFloat(position.headYaw);
-            data.writeBoolean(position.onGround);
+            FlashbackActionWriter.writeVarInt(bytes, pendingTickMovements.size());
+            for (Map.Entry<Integer, EntityPosition> entry : pendingTickMovements.entrySet()) {
+                EntityPosition position = entry.getValue();
+                FlashbackActionWriter.writeVarInt(bytes, entry.getKey());
+                data.writeDouble(position.x);
+                data.writeDouble(position.y);
+                data.writeDouble(position.z);
+                data.writeFloat(position.yaw);
+                data.writeFloat(position.pitch);
+                data.writeFloat(position.headYaw);
+                data.writeBoolean(position.onGround);
+            }
+            pendingTickMovements.clear();
             return bytes.toByteArray();
         }
 
@@ -694,9 +714,9 @@ public final class ReplayConverter {
         static final VoiceAction NOT_HANDLED = new VoiceAction(false, null, null);
         static final VoiceAction HANDLED_WITHOUT_OUTPUT = new VoiceAction(true, null, null);
     }
-    private record MovementResult(boolean handled, byte[] payload) {
-        static final MovementResult NOT_HANDLED = new MovementResult(false, null);
-        static final MovementResult HANDLED_WITHOUT_OUTPUT = new MovementResult(true, null);
+    private record MovementResult(boolean handled) {
+        static final MovementResult NOT_HANDLED = new MovementResult(false);
+        static final MovementResult HANDLED_WITHOUT_OUTPUT = new MovementResult(true);
     }
 
     private static String baseName(Path path) {
