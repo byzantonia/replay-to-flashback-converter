@@ -450,9 +450,25 @@ public final class ReplayConverter {
                 ClientboundPackets1_20_5.SET_ENTITY_DATA.getId() + ":entity:" + entityId + ":packet:"));
         keyedPackets.remove(ClientboundPackets1_20_5.SET_ENTITY_MOTION.getId() + ":entity:" + entityId);
         keyedPackets.remove(ClientboundPackets1_20_5.SET_EQUIPMENT.getId() + ":entity:" + entityId);
-        keyedPackets.remove(ClientboundPackets1_20_5.SET_PASSENGERS.getId() + ":entity:" + entityId);
+        keyedPackets.entrySet().removeIf(entry -> isSetPassengersPacketForEntity(entry.getKey(), entry.getValue(), entityId));
         keyedPackets.remove(ClientboundPackets1_20_5.TELEPORT_ENTITY.getId() + ":entity:" + entityId);
         keyedPackets.remove(ClientboundPackets1_20_5.UPDATE_ATTRIBUTES.getId() + ":entity:" + entityId);
+    }
+
+    private static boolean isSetPassengersPacketForEntity(String key, byte[] packet, int entityId) {
+        if (!key.startsWith(ClientboundPackets1_20_5.SET_PASSENGERS.getId() + ":entity:")) return false;
+        try {
+            PacketCursor in = new PacketCursor(packet);
+            if (in.varInt() != ClientboundPackets1_20_5.SET_PASSENGERS.getId()) return false;
+            if (in.varInt() == entityId) return true;
+            int passengers = in.varInt();
+            for (int i = 0; i < passengers; i++) {
+                if (in.varInt() == entityId) return true;
+            }
+            return false;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     private static SnapshotPacketKey snapshotPacketKey(byte[] packet, int packetOrdinal) {
@@ -604,6 +620,15 @@ public final class ReplayConverter {
                 entities.put(id, new EntityPosition(x, y, z, yaw, pitch, head, false));
                 return MovementResult.NOT_HANDLED;
             }
+            if (type == ClientboundPackets1_20_5.REMOVE_ENTITIES.getId()) {
+                int count = in.varInt();
+                for (int i = 0; i < count; i++) forget(in.varInt());
+                return MovementResult.NOT_HANDLED;
+            }
+            if (type == ClientboundPackets1_20_5.TAKE_ITEM_ENTITY.getId()) {
+                forget(in.varInt());
+                return MovementResult.NOT_HANDLED;
+            }
             if (type == ClientboundPackets1_20_5.TELEPORT_ENTITY.getId()) {
                 int id = in.varInt();
                 EntityPosition old = entities.get(id);
@@ -644,6 +669,11 @@ public final class ReplayConverter {
             entities.put(id, updated);
             pendingTickMovements.put(id, updated);
             return MovementResult.HANDLED_WITHOUT_OUTPUT;
+        }
+
+        private void forget(int id) {
+            entities.remove(id);
+            pendingTickMovements.remove(id);
         }
 
         byte[] drainPayload() throws IOException {

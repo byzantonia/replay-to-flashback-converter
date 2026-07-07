@@ -386,11 +386,27 @@ public final class FlashbackActionWriter implements AutoCloseable {
                     GAME_PACKET + ":" + ClientboundPackets1_20_5.SET_ENTITY_DATA.getId() + ":entity:" + entityId + ":packet:"));
             compactActions.remove(GAME_PACKET + ":" + ClientboundPackets1_20_5.SET_ENTITY_MOTION.getId() + ":entity:" + entityId);
             compactActions.remove(GAME_PACKET + ":" + ClientboundPackets1_20_5.SET_EQUIPMENT.getId() + ":entity:" + entityId);
-            compactActions.remove(GAME_PACKET + ":" + ClientboundPackets1_20_5.SET_PASSENGERS.getId() + ":entity:" + entityId);
+            compactActions.entrySet().removeIf(entry -> isSetPassengersActionForEntity(entry.getKey(), entry.getValue().payload, entityId));
             compactActions.remove(GAME_PACKET + ":" + ClientboundPackets1_20_5.TELEPORT_ENTITY.getId() + ":entity:" + entityId);
             compactActions.remove(GAME_PACKET + ":" + ClientboundPackets1_20_5.UPDATE_ATTRIBUTES.getId() + ":entity:" + entityId);
             for (Map<Integer, byte[]> entities : entityMovements.values()) {
                 entities.remove(entityId);
+            }
+        }
+
+        private boolean isSetPassengersActionForEntity(String key, byte[] packet, int entityId) {
+            if (!key.startsWith(GAME_PACKET + ":" + ClientboundPackets1_20_5.SET_PASSENGERS.getId() + ":entity:")) return false;
+            try {
+                PacketCursor in = new PacketCursor(packet);
+                if (in.varInt() != ClientboundPackets1_20_5.SET_PASSENGERS.getId()) return false;
+                if (in.varInt() == entityId) return true;
+                int passengers = in.varInt();
+                for (int i = 0; i < passengers; i++) {
+                    if (in.varInt() == entityId) return true;
+                }
+                return false;
+            } catch (RuntimeException ignored) {
+                return false;
             }
         }
     }
