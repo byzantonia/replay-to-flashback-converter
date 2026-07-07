@@ -53,10 +53,13 @@ public final class ReplayConverter {
             ClientboundPackets1_20_5.AWARD_STATS.getId(),
             ClientboundPackets1_20_5.RECIPE.getId(),
             ClientboundPackets1_20_5.OPEN_SIGN_EDITOR.getId(),
+            ClientboundPackets1_20_5.BLOCK_DESTRUCTION.getId(),
             ClientboundPackets1_20_5.ROTATE_HEAD.getId(),
             ClientboundPackets1_20_5.MOVE_ENTITY_POS.getId(),
             ClientboundPackets1_20_5.MOVE_ENTITY_ROT.getId(),
             ClientboundPackets1_20_5.MOVE_ENTITY_POS_ROT.getId(),
+            ClientboundPackets1_20_5.LEVEL_EVENT.getId(),
+            ClientboundPackets1_20_5.LEVEL_PARTICLES.getId(),
             ClientboundPackets1_20_5.PLAYER_POSITION.getId(),
             ClientboundPackets1_20_5.PLAYER_CHAT.getId(),
             ClientboundPackets1_20_5.DELETE_CHAT.getId(),
@@ -236,8 +239,8 @@ public final class ReplayConverter {
             writer.snapshotAction(FlashbackActionWriter.GAME_PACKET,
                 createPlayerModelPartsPacket(REPLAY_CAMERA_ENTITY_ID));
         }
-        for (int i = loginIndex + 1; i < snapshotGame.size(); i++) {
-            writeGamePacket(writer, chunkCache, movement, voiceChat, snapshotGame.get(i), true, 0);
+        for (byte[] packet : compactSnapshotGamePackets(snapshotGame.subList(loginIndex + 1, snapshotGame.size()))) {
+            writeGamePacket(writer, chunkCache, movement, voiceChat, packet, true, 0);
         }
         progress.accept("Reopening replay for bounded-memory conversion...");
         sourcePackets = 0;
@@ -413,6 +416,147 @@ public final class ReplayConverter {
         if (payload == null) return;
         if (snapshot) writer.snapshotAction(FlashbackActionWriter.MOVE_ENTITIES, payload);
         else writer.action(FlashbackActionWriter.MOVE_ENTITIES, payload);
+    }
+
+    private static List<byte[]> compactSnapshotGamePackets(List<byte[]> packets) {
+        ArrayList<SnapshotPacketSlot> slots = new ArrayList<>(packets.size());
+        Map<String, byte[]> keyedPackets = new LinkedHashMap<>();
+        for (int i = 0; i < packets.size(); i++) {
+            byte[] packet = packets.get(i);
+            SnapshotPacketKey key = snapshotPacketKey(packet, i);
+            for (Integer removedEntityId : key.removedEntityIds) {
+                removeSnapshotEntityState(keyedPackets, removedEntityId);
+            }
+            if (key.drop) continue;
+            if (key.value == null) {
+                slots.add(new SnapshotPacketSlot(null, packet));
+            } else {
+                if (!keyedPackets.containsKey(key.value)) {
+                    slots.add(new SnapshotPacketSlot(key.value, null));
+                }
+                keyedPackets.put(key.value, packet);
+            }
+        }
+
+        ArrayList<byte[]> compacted = new ArrayList<>(slots.size());
+        for (SnapshotPacketSlot slot : slots) {
+            byte[] packet = slot.key == null ? slot.payload : keyedPackets.get(slot.key);
+            if (packet != null) compacted.add(packet);
+        }
+        return compacted;
+    }
+
+    private static void removeSnapshotEntityState(Map<String, byte[]> keyedPackets, int entityId) {
+        keyedPackets.remove(ClientboundPackets1_20_5.ADD_ENTITY.getId() + ":entity:" + entityId);
+        keyedPackets.keySet().removeIf(key -> key.startsWith(
+                ClientboundPackets1_20_5.SET_ENTITY_DATA.getId() + ":entity:" + entityId + ":packet:"));
+        keyedPackets.remove(ClientboundPackets1_20_5.SET_ENTITY_MOTION.getId() + ":entity:" + entityId);
+        keyedPackets.remove(ClientboundPackets1_20_5.SET_EQUIPMENT.getId() + ":entity:" + entityId);
+        keyedPackets.remove(ClientboundPackets1_20_5.SET_PASSENGERS.getId() + ":entity:" + entityId);
+        keyedPackets.remove(ClientboundPackets1_20_5.TELEPORT_ENTITY.getId() + ":entity:" + entityId);
+        keyedPackets.remove(ClientboundPackets1_20_5.UPDATE_ATTRIBUTES.getId() + ":entity:" + entityId);
+    }
+
+    private static SnapshotPacketKey snapshotPacketKey(byte[] packet, int packetOrdinal) {
+        try {
+            PacketCursor in = new PacketCursor(packet);
+            int type = in.varInt();
+            if (type == ClientboundPackets1_20_5.REMOVE_ENTITIES.getId()) {
+                int count = in.varInt();
+                ArrayList<Integer> ids = new ArrayList<>(count);
+                for (int i = 0; i < count; i++) ids.add(in.varInt());
+                return SnapshotPacketKey.removeEntities(ids);
+            }
+            if (type == ClientboundPackets1_20_5.TAKE_ITEM_ENTITY.getId()) {
+                return SnapshotPacketKey.removeEntity(in.varInt());
+            }
+            if (isTransientSnapshotPacket(type)) {
+                return SnapshotPacketKey.DROP;
+            }
+            if (type == ClientboundPackets1_20_5.LEVEL_CHUNK_WITH_LIGHT.getId()
+                    || type == ClientboundPackets1_20_5.LIGHT_UPDATE.getId()
+                    || type == ClientboundPackets1_20_5.CHUNKS_BIOMES.getId()) {
+                return SnapshotPacketKey.keep(type + ":chunk:" + in.intValue() + ":" + in.intValue());
+            }
+            if (type == ClientboundPackets1_20_5.SET_ENTITY_DATA.getId()) {
+                return SnapshotPacketKey.keep(type + ":entity:" + in.varInt() + ":packet:" + packetOrdinal);
+            }
+            if (type == ClientboundPackets1_20_5.ADD_ENTITY.getId()
+                    || type == ClientboundPackets1_20_5.SET_ENTITY_MOTION.getId()
+                    || type == ClientboundPackets1_20_5.SET_EQUIPMENT.getId()
+                    || type == ClientboundPackets1_20_5.SET_PASSENGERS.getId()
+                    || type == ClientboundPackets1_20_5.TELEPORT_ENTITY.getId()
+                    || type == ClientboundPackets1_20_5.UPDATE_ATTRIBUTES.getId()) {
+                return SnapshotPacketKey.keep(type + ":entity:" + in.varInt());
+            }
+            if (type == ClientboundPackets1_20_5.UPDATE_MOB_EFFECT.getId()
+                    || type == ClientboundPackets1_20_5.REMOVE_MOB_EFFECT.getId()) {
+                int entityId = in.varInt();
+                int effectId = in.varInt();
+                return SnapshotPacketKey.keep(type + ":effect:" + entityId + ":" + effectId);
+            }
+            if (type == ClientboundPackets1_20_5.PLAYER_INFO_UPDATE.getId()) {
+                int actions = in.unsignedByte();
+                int entries = in.varInt();
+                if (entries == 1) {
+                    UUID uuid = new UUID(in.longValue(), in.longValue());
+                    return SnapshotPacketKey.keep(type + ":player_info:" + actions + ":" + uuid);
+                }
+                return SnapshotPacketKey.KEEP;
+            }
+            if (type == ClientboundPackets1_20_5.BOSS_EVENT.getId()) {
+                UUID uuid = new UUID(in.longValue(), in.longValue());
+                return SnapshotPacketKey.keep(type + ":boss:" + uuid);
+            }
+            if (type == ClientboundPackets1_20_5.BLOCK_ENTITY_DATA.getId()
+                    || type == ClientboundPackets1_20_5.BLOCK_UPDATE.getId()) {
+                return SnapshotPacketKey.keep(type + ":block:" + in.longValue());
+            }
+            if (type == ClientboundPackets1_20_5.SECTION_BLOCKS_UPDATE.getId()) {
+                return SnapshotPacketKey.keep(type + ":section:" + in.longValue() + ":" + packetOrdinal);
+            }
+            if (type == ClientboundPackets1_20_5.MAP_ITEM_DATA.getId()) {
+                return SnapshotPacketKey.keep(type + ":map:" + in.varInt());
+            }
+            if (type == ClientboundPackets1_20_5.SET_PLAYER_TEAM.getId()
+                    || type == ClientboundPackets1_20_5.SET_OBJECTIVE.getId()) {
+                return SnapshotPacketKey.keep(type + ":named:" + in.stringValue());
+            }
+            if (type == ClientboundPackets1_20_5.SET_DISPLAY_OBJECTIVE.getId()) {
+                return SnapshotPacketKey.keep(type + ":slot:" + in.varInt());
+            }
+            if (type == ClientboundPackets1_20_5.SET_SCORE.getId()) {
+                String owner = in.stringValue();
+                String objective = in.stringValue();
+                return SnapshotPacketKey.keep(type + ":score:" + owner + ":" + objective);
+            }
+            return SnapshotPacketKey.KEEP;
+        } catch (RuntimeException ignored) {
+            return SnapshotPacketKey.KEEP;
+        }
+    }
+
+    private static boolean isTransientSnapshotPacket(int type) {
+        return type == ClientboundPackets1_20_5.ANIMATE.getId()
+                || type == ClientboundPackets1_20_5.BLOCK_DESTRUCTION.getId()
+                || type == ClientboundPackets1_20_5.BLOCK_EVENT.getId()
+                || type == ClientboundPackets1_20_5.DAMAGE_EVENT.getId()
+                || type == ClientboundPackets1_20_5.DISGUISED_CHAT.getId()
+                || type == ClientboundPackets1_20_5.ENTITY_EVENT.getId()
+                || type == ClientboundPackets1_20_5.EXPLODE.getId()
+                || type == ClientboundPackets1_20_5.HURT_ANIMATION.getId()
+                || type == ClientboundPackets1_20_5.LEVEL_EVENT.getId()
+                || type == ClientboundPackets1_20_5.LEVEL_PARTICLES.getId()
+                || type == ClientboundPackets1_20_5.PLAYER_INFO_REMOVE.getId()
+                || type == ClientboundPackets1_20_5.RESET_SCORE.getId()
+                || type == ClientboundPackets1_20_5.SET_ACTION_BAR_TEXT.getId()
+                || type == ClientboundPackets1_20_5.SET_SUBTITLE_TEXT.getId()
+                || type == ClientboundPackets1_20_5.SET_TITLE_TEXT.getId()
+                || type == ClientboundPackets1_20_5.SET_TITLES_ANIMATION.getId()
+                || type == ClientboundPackets1_20_5.SOUND.getId()
+                || type == ClientboundPackets1_20_5.SOUND_ENTITY.getId()
+                || type == ClientboundPackets1_20_5.STOP_SOUND.getId()
+                || type == ClientboundPackets1_20_5.SYSTEM_CHAT.getId();
     }
 
     private static final class ChunkCacheBuilder {
@@ -671,6 +815,7 @@ public final class ReplayConverter {
         }
         void skip(int bytes) { data.position(data.position() + bytes); }
         long longValue() { return data.getLong(); }
+        int intValue() { return data.getInt(); }
         int unsignedByte() { return data.get() & 0xff; }
         byte byteValue() { return data.get(); }
         short shortValue() { return data.getShort(); }
@@ -703,6 +848,20 @@ public final class ReplayConverter {
 
     private record EntityPosition(double x, double y, double z, float yaw, float pitch, float headYaw, boolean onGround) {}
     private record EntitySpawn(int entityId, UUID uuid) {}
+    private record SnapshotPacketSlot(String key, byte[] payload) {}
+    private record SnapshotPacketKey(boolean drop, String value, List<Integer> removedEntityIds) {
+        static final SnapshotPacketKey KEEP = new SnapshotPacketKey(false, null, List.of());
+        static final SnapshotPacketKey DROP = new SnapshotPacketKey(true, null, List.of());
+        static SnapshotPacketKey keep(String value) {
+            return new SnapshotPacketKey(false, value, List.of());
+        }
+        static SnapshotPacketKey removeEntity(int entityId) {
+            return new SnapshotPacketKey(true, null, List.of(entityId));
+        }
+        static SnapshotPacketKey removeEntities(List<Integer> entityIds) {
+            return new SnapshotPacketKey(true, null, List.copyOf(entityIds));
+        }
+    }
     private record SkinProfile(UUID uuid, String name, String textureValue, String textureSignature) {}
     private record PropertyEntry(String name, String value, String signature) {}
     private record DecodedAudio(short version, UUID uuid, short[] samples) {}

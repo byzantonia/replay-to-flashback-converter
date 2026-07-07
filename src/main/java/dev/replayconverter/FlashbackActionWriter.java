@@ -1,5 +1,7 @@
 package dev.replayconverter;
 
+import com.viaversion.viaversion.protocols.v1_20_3to1_20_5.packet.ClientboundPackets1_20_5;
+
 import java.io.ByteArrayOutputStream;
 import java.io.BufferedOutputStream;
 import java.io.DataOutputStream;
@@ -171,20 +173,40 @@ public final class FlashbackActionWriter implements AutoCloseable {
     private record TimelineChunk(Path path, int ticks, byte[] snapshot) {}
 
     private final class SnapshotState {
-        private final ByteArrayOutputStream actions = new ByteArrayOutputStream();
+        private final List<SnapshotActionSlot> compactActionSlots = new ArrayList<>();
+        private final Map<String, SnapshotAction> compactActions = new LinkedHashMap<>();
         private final Map<String, Map<Integer, byte[]>> entityMovements = new LinkedHashMap<>();
 
         void accept(String name, byte[] payload) throws IOException {
             if (MOVE_ENTITIES.equals(name) && rememberMoveEntities(payload)) {
                 return;
             }
-            writeAction(actions, name, payload);
+
+            SnapshotActionKey key = keyForSnapshotAction(name, payload);
+            for (Integer removedEntityId : key.removedEntityIds) {
+                removeEntityState(removedEntityId);
+            }
+            if (key.drop) {
+                return;
+            }
+            if (key.value == null) {
+                return;
+            }
+            if (!compactActions.containsKey(key.value)) {
+                compactActionSlots.add(new SnapshotActionSlot(key.value));
+            }
+            compactActions.put(key.value, new SnapshotAction(name, payload));
         }
 
         byte[] toByteArray() {
             try {
-                ByteArrayOutputStream result = new ByteArrayOutputStream(actions.size() + entityMovements.size() * 64);
-                actions.writeTo(result);
+                ByteArrayOutputStream result = new ByteArrayOutputStream(compactActions.size() * 64 + entityMovements.size() * 64);
+                for (SnapshotActionSlot slot : compactActionSlots) {
+                    SnapshotAction action = compactActions.get(slot.key);
+                    if (action != null) {
+                        writeAction(result, action.name, action.payload);
+                    }
+                }
                 for (Map.Entry<String, Map<Integer, byte[]>> dimension : entityMovements.entrySet()) {
                     ByteArrayOutputStream payload = new ByteArrayOutputStream(64 + dimension.getValue().size() * 40);
                     writeVarInt(payload, 1);
@@ -222,6 +244,155 @@ public final class FlashbackActionWriter implements AutoCloseable {
                 return false;
             }
         }
+
+        private SnapshotActionKey keyForSnapshotAction(String name, byte[] payload) {
+            if (CONFIGURATION_PACKET.equals(name)) {
+                return SnapshotActionKey.keep(name + ":" + compactActionSlots.size());
+            }
+            if (LEVEL_CHUNK_CACHED.equals(name)) {
+                return SnapshotActionKey.keep(name + ":" + compactActionSlots.size());
+            }
+            if (!GAME_PACKET.equals(name)) {
+                return SnapshotActionKey.DROP;
+            }
+            return keyForSnapshotGamePacket(payload);
+        }
+
+        private SnapshotActionKey keyForSnapshotGamePacket(byte[] packet) {
+            try {
+                PacketCursor in = new PacketCursor(packet);
+                int type = in.varInt();
+                if (type == ClientboundPackets1_20_5.REMOVE_ENTITIES.getId()) {
+                    int count = in.varInt();
+                    ArrayList<Integer> ids = new ArrayList<>(count);
+                    for (int i = 0; i < count; i++) ids.add(in.varInt());
+                    return SnapshotActionKey.removeEntities(ids);
+                }
+                if (type == ClientboundPackets1_20_5.TAKE_ITEM_ENTITY.getId()) {
+                    return SnapshotActionKey.removeEntity(in.varInt());
+                }
+                if (isTransientSnapshotPacket(type)) {
+                    return SnapshotActionKey.DROP;
+                }
+                if (type == ClientboundPackets1_20_5.LEVEL_CHUNK_WITH_LIGHT.getId()
+                        || type == ClientboundPackets1_20_5.LIGHT_UPDATE.getId()
+                        || type == ClientboundPackets1_20_5.CHUNKS_BIOMES.getId()) {
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":chunk:" + in.intValue() + ":" + in.intValue());
+                }
+                if (type == ClientboundPackets1_20_5.SET_ENTITY_DATA.getId()) {
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":entity:" + in.varInt()
+                            + ":packet:" + compactActionSlots.size());
+                }
+                if (type == ClientboundPackets1_20_5.ADD_ENTITY.getId()
+                        || type == ClientboundPackets1_20_5.SET_ENTITY_MOTION.getId()
+                        || type == ClientboundPackets1_20_5.SET_EQUIPMENT.getId()
+                        || type == ClientboundPackets1_20_5.SET_PASSENGERS.getId()
+                        || type == ClientboundPackets1_20_5.TELEPORT_ENTITY.getId()
+                        || type == ClientboundPackets1_20_5.UPDATE_ATTRIBUTES.getId()) {
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":entity:" + in.varInt());
+                }
+                if (type == ClientboundPackets1_20_5.UPDATE_MOB_EFFECT.getId()
+                        || type == ClientboundPackets1_20_5.REMOVE_MOB_EFFECT.getId()) {
+                    int entityId = in.varInt();
+                    int effectId = in.varInt();
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":effect:" + entityId + ":" + effectId);
+                }
+                if (type == ClientboundPackets1_20_5.PLAYER_INFO_UPDATE.getId()) {
+                    int actions = in.unsignedByte();
+                    int entries = in.varInt();
+                    if (entries == 1) {
+                        long most = in.longValue();
+                        long least = in.longValue();
+                        return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":player_info:" + actions + ":" + most + ":" + least);
+                    }
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":multi:" + compactActionSlots.size());
+                }
+                if (type == ClientboundPackets1_20_5.BOSS_EVENT.getId()) {
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":boss:" + in.longValue() + ":" + in.longValue());
+                }
+                if (type == ClientboundPackets1_20_5.BLOCK_ENTITY_DATA.getId()
+                        || type == ClientboundPackets1_20_5.BLOCK_UPDATE.getId()) {
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":block:" + in.longValue());
+                }
+                if (type == ClientboundPackets1_20_5.SECTION_BLOCKS_UPDATE.getId()) {
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":section:" + in.longValue() + ":" + compactActionSlots.size());
+                }
+                if (type == ClientboundPackets1_20_5.MAP_ITEM_DATA.getId()) {
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":map:" + in.varInt());
+                }
+                if (type == ClientboundPackets1_20_5.SET_PLAYER_TEAM.getId()
+                        || type == ClientboundPackets1_20_5.SET_OBJECTIVE.getId()) {
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":named:" + in.stringValue());
+                }
+                if (type == ClientboundPackets1_20_5.SET_DISPLAY_OBJECTIVE.getId()) {
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":slot:" + in.varInt());
+                }
+                if (type == ClientboundPackets1_20_5.SET_SCORE.getId()) {
+                    String owner = in.stringValue();
+                    String objective = in.stringValue();
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":score:" + owner + ":" + objective);
+                }
+                if (type == ClientboundPackets1_20_5.GAME_EVENT.getId()
+                        || type == ClientboundPackets1_20_5.INITIALIZE_BORDER.getId()
+                        || type == ClientboundPackets1_20_5.LOGIN.getId()
+                        || type == ClientboundPackets1_20_5.RESOURCE_PACK_POP.getId()
+                        || type == ClientboundPackets1_20_5.RESOURCE_PACK_PUSH.getId()
+                        || type == ClientboundPackets1_20_5.RESPAWN.getId()
+                        || type == ClientboundPackets1_20_5.SERVER_DATA.getId()
+                        || type == ClientboundPackets1_20_5.SET_BORDER_CENTER.getId()
+                        || type == ClientboundPackets1_20_5.SET_BORDER_LERP_SIZE.getId()
+                        || type == ClientboundPackets1_20_5.SET_BORDER_SIZE.getId()
+                        || type == ClientboundPackets1_20_5.SET_BORDER_WARNING_DELAY.getId()
+                        || type == ClientboundPackets1_20_5.SET_BORDER_WARNING_DISTANCE.getId()
+                        || type == ClientboundPackets1_20_5.SET_DEFAULT_SPAWN_POSITION.getId()
+                        || type == ClientboundPackets1_20_5.SET_SIMULATION_DISTANCE.getId()
+                        || type == ClientboundPackets1_20_5.SET_TIME.getId()
+                        || type == ClientboundPackets1_20_5.TAB_LIST.getId()
+                        || type == ClientboundPackets1_20_5.UPDATE_TAGS.getId()) {
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type);
+                }
+                return SnapshotActionKey.DROP;
+            } catch (RuntimeException ignored) {
+                return SnapshotActionKey.DROP;
+            }
+        }
+
+        private boolean isTransientSnapshotPacket(int type) {
+            return type == ClientboundPackets1_20_5.ANIMATE.getId()
+                    || type == ClientboundPackets1_20_5.BLOCK_DESTRUCTION.getId()
+                    || type == ClientboundPackets1_20_5.BLOCK_EVENT.getId()
+                    || type == ClientboundPackets1_20_5.DAMAGE_EVENT.getId()
+                    || type == ClientboundPackets1_20_5.DISGUISED_CHAT.getId()
+                    || type == ClientboundPackets1_20_5.ENTITY_EVENT.getId()
+                    || type == ClientboundPackets1_20_5.EXPLODE.getId()
+                    || type == ClientboundPackets1_20_5.HURT_ANIMATION.getId()
+                    || type == ClientboundPackets1_20_5.LEVEL_EVENT.getId()
+                    || type == ClientboundPackets1_20_5.LEVEL_PARTICLES.getId()
+                    || type == ClientboundPackets1_20_5.PLAYER_INFO_REMOVE.getId()
+                    || type == ClientboundPackets1_20_5.RESET_SCORE.getId()
+                    || type == ClientboundPackets1_20_5.SET_ACTION_BAR_TEXT.getId()
+                    || type == ClientboundPackets1_20_5.SET_SUBTITLE_TEXT.getId()
+                    || type == ClientboundPackets1_20_5.SET_TITLE_TEXT.getId()
+                    || type == ClientboundPackets1_20_5.SET_TITLES_ANIMATION.getId()
+                    || type == ClientboundPackets1_20_5.SOUND.getId()
+                    || type == ClientboundPackets1_20_5.SOUND_ENTITY.getId()
+                    || type == ClientboundPackets1_20_5.STOP_SOUND.getId()
+                    || type == ClientboundPackets1_20_5.SYSTEM_CHAT.getId();
+        }
+
+        private void removeEntityState(int entityId) {
+            compactActions.remove(GAME_PACKET + ":" + ClientboundPackets1_20_5.ADD_ENTITY.getId() + ":entity:" + entityId);
+            compactActions.keySet().removeIf(key -> key.startsWith(
+                    GAME_PACKET + ":" + ClientboundPackets1_20_5.SET_ENTITY_DATA.getId() + ":entity:" + entityId + ":packet:"));
+            compactActions.remove(GAME_PACKET + ":" + ClientboundPackets1_20_5.SET_ENTITY_MOTION.getId() + ":entity:" + entityId);
+            compactActions.remove(GAME_PACKET + ":" + ClientboundPackets1_20_5.SET_EQUIPMENT.getId() + ":entity:" + entityId);
+            compactActions.remove(GAME_PACKET + ":" + ClientboundPackets1_20_5.SET_PASSENGERS.getId() + ":entity:" + entityId);
+            compactActions.remove(GAME_PACKET + ":" + ClientboundPackets1_20_5.TELEPORT_ENTITY.getId() + ":entity:" + entityId);
+            compactActions.remove(GAME_PACKET + ":" + ClientboundPackets1_20_5.UPDATE_ATTRIBUTES.getId() + ":entity:" + entityId);
+            for (Map<Integer, byte[]> entities : entityMovements.values()) {
+                entities.remove(entityId);
+            }
+        }
     }
 
     private static final class PacketCursor {
@@ -239,6 +410,29 @@ public final class FlashbackActionWriter implements AutoCloseable {
         void skip(int count) {
             if (count < 0 || position + count > bytes.length) throw new IllegalArgumentException("Packet underflow");
             position += count;
+        }
+
+        long longValue() {
+            if (position + Long.BYTES > bytes.length) throw new IllegalArgumentException("Packet underflow");
+            long value = 0;
+            for (int i = 0; i < Long.BYTES; i++) {
+                value = (value << 8) | (bytes[position++] & 0xffL);
+            }
+            return value;
+        }
+
+        int intValue() {
+            if (position + Integer.BYTES > bytes.length) throw new IllegalArgumentException("Packet underflow");
+            int value = 0;
+            for (int i = 0; i < Integer.BYTES; i++) {
+                value = (value << 8) | (bytes[position++] & 0xff);
+            }
+            return value;
+        }
+
+        int unsignedByte() {
+            if (position >= bytes.length) throw new IllegalArgumentException("Packet underflow");
+            return bytes[position++] & 0xff;
         }
 
         int varInt() {
@@ -260,6 +454,21 @@ public final class FlashbackActionWriter implements AutoCloseable {
             String value = new String(bytes, position, length, StandardCharsets.UTF_8);
             position += length;
             return value;
+        }
+    }
+
+    private record SnapshotAction(String name, byte[] payload) {}
+    private record SnapshotActionSlot(String key) {}
+    private record SnapshotActionKey(boolean drop, String value, List<Integer> removedEntityIds) {
+        static final SnapshotActionKey DROP = new SnapshotActionKey(true, null, List.of());
+        static SnapshotActionKey keep(String value) {
+            return new SnapshotActionKey(false, value, List.of());
+        }
+        static SnapshotActionKey removeEntity(int entityId) {
+            return new SnapshotActionKey(true, null, List.of(entityId));
+        }
+        static SnapshotActionKey removeEntities(List<Integer> entityIds) {
+            return new SnapshotActionKey(true, null, List.copyOf(entityIds));
         }
     }
 }
