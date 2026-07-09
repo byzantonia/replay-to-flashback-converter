@@ -1,5 +1,6 @@
 package dev.replayconverter;
 
+import com.viaversion.viaversion.api.minecraft.entities.EntityTypes1_20_5;
 import com.viaversion.viaversion.protocols.v1_20_3to1_20_5.packet.ClientboundPackets1_20_5;
 
 import java.io.ByteArrayOutputStream;
@@ -195,6 +196,12 @@ public final class FlashbackActionWriter implements AutoCloseable {
             if (!compactActions.containsKey(key.value)) {
                 compactActionSlots.add(new SnapshotActionSlot(key.value));
             }
+            if (isSetEquipmentKey(key.value)) {
+                SnapshotAction existing = compactActions.get(key.value);
+                if (existing != null) {
+                    payload = EquipmentPackets.merge(existing.payload, payload);
+                }
+            }
             compactActions.put(key.value, new SnapshotAction(name, payload));
         }
 
@@ -283,8 +290,16 @@ public final class FlashbackActionWriter implements AutoCloseable {
                     return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":entity:" + in.varInt()
                             + ":packet:" + compactActionSlots.size());
                 }
-                if (type == ClientboundPackets1_20_5.ADD_ENTITY.getId()
-                        || type == ClientboundPackets1_20_5.SET_ENTITY_MOTION.getId()
+                if (type == ClientboundPackets1_20_5.ADD_ENTITY.getId()) {
+                    int entityId = in.varInt();
+                    in.skip(16); // UUID
+                    int entityTypeId = in.varInt();
+                    if (isFishingBobberEntityType(entityTypeId)) {
+                        return SnapshotActionKey.removeEntity(entityId);
+                    }
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":entity:" + entityId);
+                }
+                if (type == ClientboundPackets1_20_5.SET_ENTITY_MOTION.getId()
                         || type == ClientboundPackets1_20_5.SET_EQUIPMENT.getId()
                         || type == ClientboundPackets1_20_5.SET_PASSENGERS.getId()
                         || type == ClientboundPackets1_20_5.TELEPORT_ENTITY.getId()
@@ -379,6 +394,14 @@ public final class FlashbackActionWriter implements AutoCloseable {
                     || type == ClientboundPackets1_20_5.SOUND_ENTITY.getId()
                     || type == ClientboundPackets1_20_5.STOP_SOUND.getId()
                     || type == ClientboundPackets1_20_5.SYSTEM_CHAT.getId();
+        }
+
+        private boolean isSetEquipmentKey(String key) {
+            return key.startsWith(GAME_PACKET + ":" + ClientboundPackets1_20_5.SET_EQUIPMENT.getId() + ":entity:");
+        }
+
+        private boolean isFishingBobberEntityType(int entityTypeId) {
+            return EntityTypes1_20_5.getTypeFromId(entityTypeId) == EntityTypes1_20_5.FISHING_BOBBER;
         }
 
         private void removeEntityState(int entityId) {

@@ -1,6 +1,7 @@
 package dev.replayconverter;
 
 import com.viaversion.viaversion.api.protocol.packet.State;
+import com.viaversion.viaversion.api.minecraft.entities.EntityTypes1_20_5;
 import com.viaversion.viaversion.protocols.v1_20_3to1_20_5.packet.ClientboundPackets1_20_5;
 import com.viaversion.viaversion.protocols.v1_20_3to1_20_5.packet.ClientboundConfigurationPackets1_20_5;
 import com.google.gson.JsonArray;
@@ -433,7 +434,11 @@ public final class ReplayConverter {
                 if (!keyedPackets.containsKey(key.value)) {
                     slots.add(new SnapshotPacketSlot(key.value, null));
                 }
-                keyedPackets.put(key.value, packet);
+                if (isSetEquipmentKey(key.value)) {
+                    keyedPackets.merge(key.value, packet, EquipmentPackets::merge);
+                } else {
+                    keyedPackets.put(key.value, packet);
+                }
             }
         }
 
@@ -472,6 +477,10 @@ public final class ReplayConverter {
         }
     }
 
+    private static boolean isSetEquipmentKey(String key) {
+        return key.startsWith(ClientboundPackets1_20_5.SET_EQUIPMENT.getId() + ":entity:");
+    }
+
     private static SnapshotPacketKey snapshotPacketKey(byte[] packet, int packetOrdinal) {
         try {
             PacketCursor in = new PacketCursor(packet);
@@ -496,8 +505,16 @@ public final class ReplayConverter {
             if (type == ClientboundPackets1_20_5.SET_ENTITY_DATA.getId()) {
                 return SnapshotPacketKey.keep(type + ":entity:" + in.varInt() + ":packet:" + packetOrdinal);
             }
-            if (type == ClientboundPackets1_20_5.ADD_ENTITY.getId()
-                    || type == ClientboundPackets1_20_5.SET_ENTITY_MOTION.getId()
+            if (type == ClientboundPackets1_20_5.ADD_ENTITY.getId()) {
+                int entityId = in.varInt();
+                in.skip(16); // UUID
+                int entityTypeId = in.varInt();
+                if (isFishingBobberEntityType(entityTypeId)) {
+                    return SnapshotPacketKey.removeEntity(entityId);
+                }
+                return SnapshotPacketKey.keep(type + ":entity:" + entityId);
+            }
+            if (type == ClientboundPackets1_20_5.SET_ENTITY_MOTION.getId()
                     || type == ClientboundPackets1_20_5.SET_EQUIPMENT.getId()
                     || type == ClientboundPackets1_20_5.SET_PASSENGERS.getId()
                     || type == ClientboundPackets1_20_5.TELEPORT_ENTITY.getId()
@@ -1313,6 +1330,10 @@ public final class ReplayConverter {
             if ((packet[i] & 0x80) == 0) return i + 1;
         }
         return -1;
+    }
+
+    private static boolean isFishingBobberEntityType(int entityTypeId) {
+        return EntityTypes1_20_5.getTypeFromId(entityTypeId) == EntityTypes1_20_5.FISHING_BOBBER;
     }
 
     private record PlayerSpawn(double x, double y, double z, float yaw, float pitch) {}
