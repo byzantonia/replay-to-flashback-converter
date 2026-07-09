@@ -45,6 +45,7 @@ public final class ReplayConverter {
     private static final Set<Integer> FLASHBACK_IGNORED_GAME_PACKET_IDS = Set.of(
             // Network framing consumed by Minecraft's packet-bundling pipeline.
             ClientboundPackets1_20_5.BUNDLE_DELIMITER.getId(),
+            ClientboundPackets1_20_5.ADD_EXPERIENCE_ORB.getId(),
             ClientboundPackets1_20_5.STORE_COOKIE.getId(),
             ClientboundPackets1_20_5.DISCONNECT.getId(),
             ClientboundPackets1_20_5.PING.getId(),
@@ -552,6 +553,7 @@ public final class ReplayConverter {
 
     private static boolean isTransientSnapshotPacket(int type) {
         return type == ClientboundPackets1_20_5.ANIMATE.getId()
+                || type == ClientboundPackets1_20_5.ADD_EXPERIENCE_ORB.getId()
                 || type == ClientboundPackets1_20_5.BLOCK_DESTRUCTION.getId()
                 || type == ClientboundPackets1_20_5.BLOCK_EVENT.getId()
                 || type == ClientboundPackets1_20_5.DAMAGE_EVENT.getId()

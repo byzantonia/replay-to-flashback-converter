@@ -359,6 +359,7 @@ public final class FlashbackActionWriter implements AutoCloseable {
 
         private boolean isTransientSnapshotPacket(int type) {
             return type == ClientboundPackets1_20_5.ANIMATE.getId()
+                    || type == ClientboundPackets1_20_5.ADD_EXPERIENCE_ORB.getId()
                     || type == ClientboundPackets1_20_5.BLOCK_DESTRUCTION.getId()
                     || type == ClientboundPackets1_20_5.BLOCK_EVENT.getId()
                     || type == ClientboundPackets1_20_5.DAMAGE_EVENT.getId()
