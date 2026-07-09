@@ -55,7 +55,6 @@ public final class ReplayConverter {
             ClientboundPackets1_20_5.AWARD_STATS.getId(),
             ClientboundPackets1_20_5.RECIPE.getId(),
             ClientboundPackets1_20_5.OPEN_SIGN_EDITOR.getId(),
-            ClientboundPackets1_20_5.BLOCK_DESTRUCTION.getId(),
             ClientboundPackets1_20_5.ROTATE_HEAD.getId(),
             ClientboundPackets1_20_5.MOVE_ENTITY_POS.getId(),
             ClientboundPackets1_20_5.MOVE_ENTITY_ROT.getId(),
