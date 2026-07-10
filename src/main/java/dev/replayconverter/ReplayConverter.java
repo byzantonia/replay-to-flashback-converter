@@ -42,6 +42,9 @@ public final class ReplayConverter {
     private static final int SIMPLE_VOICE_WARMUP_TICKS = 40;
     private static final int FLASHBACK_CHUNK_CACHE_SIZE = 10000;
     private static final int REPLAY_CAMERA_ENTITY_ID = 2_000_000_000;
+    private static final int GAME_EVENT_STOP_RAINING = 2;
+    private static final int GAME_EVENT_RAIN_LEVEL_CHANGE = 7;
+    private static final int GAME_EVENT_THUNDER_LEVEL_CHANGE = 8;
     private static final UUID REPLAY_CAMERA_PROFILE_UUID = new UUID(0L, 1L);
     private static final Set<Integer> FLASHBACK_IGNORED_GAME_PACKET_IDS = Set.of(
             // Network framing consumed by Minecraft's packet-bundling pipeline.
@@ -238,6 +241,12 @@ public final class ReplayConverter {
             writer.snapshotAction(FlashbackActionWriter.GAME_PACKET,
                 createPlayerModelPartsPacket(REPLAY_CAMERA_ENTITY_ID));
         }
+        // Weather is toggled by GAME_EVENT packets, and their absence means "leave as-is". Seed an
+        // explicit clear-weather baseline so seeking back to before any weather change resets it
+        // instead of leaving stale rain/thunder from a later point in the timeline.
+        writer.snapshotAction(FlashbackActionWriter.GAME_PACKET, createGameEventPacket(GAME_EVENT_STOP_RAINING, 0.0f));
+        writer.snapshotAction(FlashbackActionWriter.GAME_PACKET, createGameEventPacket(GAME_EVENT_RAIN_LEVEL_CHANGE, 0.0f));
+        writer.snapshotAction(FlashbackActionWriter.GAME_PACKET, createGameEventPacket(GAME_EVENT_THUNDER_LEVEL_CHANGE, 0.0f));
         for (byte[] packet : compactSnapshotGamePackets(snapshotGame.subList(loginIndex + 1, snapshotGame.size()))) {
             writeGamePacket(writer, chunkCache, movement, voiceChat, packet, true, 0);
         }
@@ -560,6 +569,10 @@ public final class ReplayConverter {
                 String owner = in.stringValue();
                 String objective = in.stringValue();
                 return SnapshotPacketKey.keep(type + ":score:" + owner + ":" + objective);
+            }
+            if (type == ClientboundPackets1_20_5.GAME_EVENT.getId()) {
+                int eventId = in.unsignedByte();
+                return SnapshotPacketKey.keep(type + ":game_event:" + FlashbackActionWriter.gameEventStateKey(eventId));
             }
             return SnapshotPacketKey.KEEP;
         } catch (RuntimeException ignored) {
@@ -999,6 +1012,14 @@ public final class ReplayConverter {
         FlashbackActionWriter.writeVarInt(bytes, 0);
         bytes.write(0x7F);
         bytes.write(0xFF); // terminator
+        return bytes.toByteArray();
+    }
+
+    private static byte[] createGameEventPacket(int eventId, float value) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream(8);
+        FlashbackActionWriter.writeVarInt(bytes, ClientboundPackets1_20_5.GAME_EVENT.getId());
+        bytes.write(eventId & 0xff);
+        new DataOutputStream(bytes).writeFloat(value);
         return bytes.toByteArray();
     }
 

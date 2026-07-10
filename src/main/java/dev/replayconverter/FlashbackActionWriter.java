@@ -28,6 +28,18 @@ public final class FlashbackActionWriter implements AutoCloseable {
     public static final String MOVE_ENTITIES = "flashback:action/move_entities";
     public static final String SIMPLE_VOICE_CHAT_SOUND_OPTIONAL = "flashback:action/simple_voice_chat_sound_optional";
     private static final int TICKS_PER_CHUNK = 5 * 60 * 20;
+    private static final int GAME_EVENT_START_RAINING = 1;
+    private static final int GAME_EVENT_STOP_RAINING = 2;
+
+    /**
+     * Groups {@code GAME_EVENT} sub-events into distinct snapshot state slots. START/STOP raining
+     * toggle the same weather state, so they share a key and only the latest survives compaction;
+     * every other sub-event keeps its own slot instead of clobbering unrelated game events.
+     */
+    static String gameEventStateKey(int eventId) {
+        if (eventId == GAME_EVENT_START_RAINING || eventId == GAME_EVENT_STOP_RAINING) return "rain";
+        return Integer.toString(eventId);
+    }
 
     private final List<String> actionTable;
     private final Map<String, Integer> actionIds = new LinkedHashMap<>();
@@ -347,8 +359,11 @@ public final class FlashbackActionWriter implements AutoCloseable {
                     String objective = in.stringValue();
                     return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":score:" + owner + ":" + objective);
                 }
-                if (type == ClientboundPackets1_20_5.GAME_EVENT.getId()
-                        || type == ClientboundPackets1_20_5.INITIALIZE_BORDER.getId()
+                if (type == ClientboundPackets1_20_5.GAME_EVENT.getId()) {
+                    int eventId = in.unsignedByte();
+                    return SnapshotActionKey.keep(GAME_PACKET + ":" + type + ":game_event:" + gameEventStateKey(eventId));
+                }
+                if (type == ClientboundPackets1_20_5.INITIALIZE_BORDER.getId()
                         || type == ClientboundPackets1_20_5.LOGIN.getId()
                         || type == ClientboundPackets1_20_5.RESOURCE_PACK_POP.getId()
                         || type == ClientboundPackets1_20_5.RESOURCE_PACK_PUSH.getId()
